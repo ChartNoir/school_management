@@ -8,7 +8,8 @@ if (session_status() === PHP_SESSION_NONE) {
 }
 ob_start();
 
-function checkRole($role) {
+function checkRole($role)
+{
     if (!isset($_SESSION['role']) || $_SESSION['role'] !== $role) {
         header('Content-Type: application/json');
         echo json_encode(['result' => 'Error: Unauthorized']);
@@ -16,23 +17,24 @@ function checkRole($role) {
     }
 }
 
-function createStudent($data) { // Removed $file parameter
+function createStudent($data)
+{ // Removed $file parameter
     global $pdo;
     checkRole('admin');
     try {
         $pdo->beginTransaction();
-        
+
         $password = password_hash('default123', PASSWORD_BCRYPT);
         $profileImage = !empty($data['profile_image']) ? $data['profile_image'] : null;
 
         $stmt = $pdo->prepare("INSERT INTO users (username, email, password, role, profile_image) VALUES (?, ?, ?, 'student', ?)");
         $stmt->execute([$data['username'], $data['email'], $password, $profileImage]);
         $user_id = $pdo->lastInsertId();
-        
+
         // Updated to use course_id instead of department
         $stmt = $pdo->prepare("INSERT INTO student_details (user_id, full_name, student_id, course_id, enrollment_date, graduation_date, phone_number, address) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
         $stmt->execute([$user_id, $data['full_name'], $data['student_id'], $data['course_id'], $data['enrollment_date'], $data['graduation_date'], $data['phone'], $data['address']]);
-        
+
         $pdo->commit();
 
         $expire_date = date('Y-m-d', strtotime($data['graduation_date'] . ' +1 day'));
@@ -44,8 +46,8 @@ function createStudent($data) { // Removed $file parameter
             error_log("Failed to create Linux user: $output");
             return "Student created successfully in database, but failed to create Linux user: $output";
         }
-        
-        return true;    
+
+        return true;
     } catch (Exception $e) {
         if ($pdo->inTransaction()) {
             $pdo->rollBack();
@@ -55,7 +57,8 @@ function createStudent($data) { // Removed $file parameter
     }
 }
 
-function createTeacher($data) {
+function createTeacher($data)
+{
     global $pdo;
     checkRole('admin');
     try {
@@ -89,7 +92,8 @@ function createTeacher($data) {
     }
 }
 
-function createEnrollment($data) {
+function createEnrollment($data)
+{
     global $pdo;
     checkRole('admin');
     try {
@@ -121,7 +125,8 @@ function createEnrollment($data) {
     }
 }
 
-function updateStudentDetails($data) {
+function updateStudentDetails($data)
+{
     global $pdo;
     if ($_SESSION['role'] !== 'admin' && $_SESSION['role'] !== 'student') {
         return "Error: Unauthorized";
@@ -212,7 +217,8 @@ function updateStudentDetails($data) {
     }
 }
 
-function updateTeacherDetails($data) {
+function updateTeacherDetails($data)
+{
     global $pdo;
     if ($_SESSION['role'] !== 'admin' && $_SESSION['role'] !== 'teacher') {
         return "Error: Unauthorized";
@@ -286,14 +292,16 @@ function updateTeacherDetails($data) {
 
 // Specific update handlers
 
-function createCourse($data) {
+function createCourse($data)
+{
     global $pdo;
     checkRole('admin');
     $stmt = $pdo->prepare("INSERT INTO courses (course_code, course_name, department, credits, description) VALUES (?, ?, ?, ?, ?)");
     return $stmt->execute([$data['course_code'], $data['course_name'], $data['department'], $data['credits'], $data['description']]);
 }
 
-function createClass($data) {
+function createClass($data)
+{
     global $pdo;
     checkRole('admin');
     try {
@@ -319,48 +327,110 @@ function createClass($data) {
     }
 }
 
-function checkAndUpdateExpiredAccounts() {
+function checkAndUpdateExpiredAccounts()
+{
     global $pdo;
     try {
+        // Detailed logging
+        error_log("Starting account expiration check at " . date('Y-m-d H:i:s'));
+
         // Select students whose graduation_date + 1 day has passed and are still active
         $stmt = $pdo->prepare("
-            SELECT u.id, u.username, sd.student_id, sd.graduation_date
-            FROM users u
-            JOIN student_details sd ON u.id = sd.user_id
-            WHERE u.role = 'student'
-            AND u.is_active = TRUE
-            AND DATE(sd.graduation_date) < DATE_SUB(CURDATE(), INTERVAL 1 DAY)
-        ");
+    SELECT
+    u.id,
+    u.username,
+    u.email,
+    sd.student_id,
+    sd.graduation_date,
+    u.is_active
+    FROM users u
+    JOIN student_details sd ON u.id=sd.user_id
+    WHERE u.role='student'
+    AND u.is_active=TRUE
+    AND DATE(sd.graduation_date) < DATE_SUB(CURDATE(), INTERVAL 1 DAY) ");
         $stmt->execute();
         $expiredStudents = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        foreach ($expiredStudents as $student) {
-            // Mark user as inactive in the database
-            $stmt = $pdo->prepare("UPDATE users SET is_active = FALSE WHERE id = ?");
-            $stmt->execute([$student['id']]);
-            error_log("Marked user {$student['username']} (ID: {$student['id']}) as inactive.");
+        error_log(" Found " . count($expiredStudents) . " expired student accounts");
 
-            // Delete Linux user account
-            $username = escapeshellarg($student['username']);
-            $command = "sudo userdel -r $username";
-            $output = shell_exec("$command 2>&1");
-            if ($output && strpos($output, 'does not exist') === false) {
-                error_log("Failed to delete Linux user {$student['username']}: $output");
-            } else {
-                error_log("Deleted Linux user {$student['username']} successfully.");
+        foreach ($expiredStudents as $student) {
+            try {
+                // Start a transaction for each student to ensure atomicity
+                $pdo->beginTransaction();
+
+                // Comprehensive deactivation
+                $updateStmt = $pdo->prepare("
+    UPDATE users
+    SET
+    is_active = FALSE,
+    password = NULL, # Invalidate password
+    password_reset_token = NULL,
+    password_reset_expiry = NULL
+    WHERE id = ?
+    ");
+                $updateStmt->execute([$student['id']]);
+
+                // Revoke all existing session tokens or add a session invalidation mechanism
+                $revokeStmt = $pdo->prepare("
+    DELETE FROM user_sessions WHERE user_id = ?
+    "); // Assumes you have a user_sessions table
+                $revokeStmt->execute([$student['id']]);
+
+                // Optional: Send expiration notification email
+                sendAccountExpirationNotification($student['email'], $student['username'], $student['graduation_date']);
+
+                // Delete Linux user account
+                $username = escapeshellarg($student['username']);
+                $command = "sudo userdel -r $username 2>&1";
+                $output = shell_exec($command);
+
+                // Log detailed account expiration details
+                error_log(sprintf(
+                    "Expired Account Details:
+    - User ID: %d
+    - Username: %s
+    - Email: %s
+    - Graduation Date: %s
+    - Linux User Deletion: %s",
+                    $student['id'],
+                    $student['username'],
+                    $student['email'],
+                    $student['graduation_date'],
+                    $output ? 'Failed' : 'Successful'
+                ));
+
+                // Commit the transaction
+                $pdo->commit();
+            } catch (Exception $studentException) {
+                // Rollback if any error occurs during student account processing
+                $pdo->rollBack();
+                error_log("Error processing expired student {$student['username']}: " . $studentException->getMessage());
             }
         }
+
         return true;
     } catch (Exception $e) {
-        error_log("Error in checkAndUpdateExpiredAccounts: " . $e->getMessage());
+        error_log("Critical error in checkAndUpdateExpiredAccounts: " . $e->getMessage());
         return "Error checking expired accounts: " . $e->getMessage();
     }
 }
+function sendAccountExpirationNotification($email, $username, $graduationDate)
+{
+    // Implement email sending logic
+    // You would need to configure email settings
+    $subject = "Your School Account Has Expired";
+    $message = "Dear {$username},\n\n"
+        . "Your school account has expired as of {$graduationDate}. "
+        . "Please contact the administration for further assistance.";
 
-function showTable($table) {
+    // Use PHP's mail() function or a library like PHPMailer
+    @mail($email, $subject, $message);
+}
+function showTable($table)
+{
     global $pdo;
     $valid_tables = [
-        'users' => 'users', 
+        'users' => 'users',
         'student_details' => 'student_details',
         'teacher_details' => 'teacher_details',
         'courses' => 'courses',
@@ -374,7 +444,7 @@ function showTable($table) {
     try {
         $query = "SELECT * FROM " . $valid_tables[$table];
         $params = [];
-        
+
         // Apply is_active filter for users table only
         if ($table === 'users' && isset($_POST['is_active']) && $_POST['is_active'] !== '') {
             $isActive = filter_var($_POST['is_active'], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
@@ -392,7 +462,8 @@ function showTable($table) {
     }
 }
 
-function getStudentDetails() {
+function getStudentDetails()
+{
     global $pdo;
     if ($_SESSION['role'] !== 'student' && $_SESSION['role'] !== 'admin') {
         return "Unauthorized";
@@ -403,7 +474,10 @@ function getStudentDetails() {
         if ($_SESSION['role'] === 'admin' && !$studentId) {
             return "Student ID required for admin.";
         }
-        $query = "SELECT sd.*, u.last_login, u.profile_image, u.email, u.id as user_id FROM student_details sd JOIN users u ON sd.user_id = u.id WHERE ";
+        $query = "SELECT sd.*, u.last_login, u.profile_image, u.email, u.id as user_id, u.is_active
+    FROM student_details sd
+    JOIN users u ON sd.user_id = u.id
+    WHERE ";
         $params = [];
         if ($_SESSION['role'] === 'student') {
             $query .= "sd.user_id = ?";
@@ -417,43 +491,75 @@ function getStudentDetails() {
         $student = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if ($student) {
-            // Fetch enrolled classes (unchanged)
+            // Calculate Account Expiration Details
+            $student['account_expiration'] = null;
+            $student['days_until_expiration'] = null;
+            $student['expiration_message'] = null;
+
+            // Add account expiration details
+            $stmt = $pdo->prepare("
+    SELECT graduation_date
+    FROM student_details
+    WHERE user_id = ?
+    ");
+            $stmt->execute([$userId ?? $student['user_id']]);
+            $graduationDetails = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if ($graduationDetails && !empty($graduationDetails['graduation_date'])) {
+                $graduationDate = new DateTime($graduationDetails['graduation_date']);
+                $graduationDate->modify('+1 day'); // Accounts expire 1 day after graduation
+                $today = new DateTime();
+
+                if ($today <= $graduationDate) {
+                    $interval = $today->diff($graduationDate);
+                    $student['account_expiration'] = $graduationDate->format('Y-m-d');
+                    $student['days_until_expiration'] = $interval->days;
+
+                    if ($interval->days <= 30) {
+                        $student['expiration_message'] = $interval->days <= 7
+                            ? "Warning: Your account will expire in {$interval->days} days!"
+                            : "Your account will expire in {$interval->days} days.";
+                    }
+                }
+            }
+
+            // Existing code for enrollments, GPA, and grades remains the same
             $stmt = $pdo->prepare("
                 SELECT c.class_name, co.course_name, c.schedule_time, c.room_number, e.status, c.schedule_start_date, c.schedule_end_date
                 FROM enrollments e
                 JOIN class c ON e.class_id = c.id
                 JOIN courses co ON c.course_id = co.id
                 WHERE e.student_id = (SELECT id FROM student_details WHERE user_id = ?)
-            ");
+                ");
             $stmt->execute([$userId ?? $student['user_id']]);
             $student['enrollments'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
             // Calculate GPA by academic year and fetch grades
             $stmt = $pdo->prepare("
-                SELECT 
-                    g.academic_year,
-                    AVG(g.gpa_value) as year_gpa,
-                    COUNT(g.id) as grade_count
+                SELECT
+                g.academic_year,
+                AVG(g.gpa_value) as year_gpa,
+                COUNT(g.id) as grade_count
                 FROM grades g
                 WHERE g.student_id = (SELECT id FROM student_details WHERE user_id = ?)
                 GROUP BY g.academic_year
-            ");
+                ");
             $stmt->execute([$userId ?? $student['user_id']]);
             $student['gpa_by_year'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
             // Fetch grades per subject
             $stmt = $pdo->prepare("
-                SELECT 
-                    g.score,
-                    g.grade,
-                    g.gpa_value,
-                    c.class_name,
-                    co.course_name
+                SELECT
+                g.score,
+                g.grade,
+                g.gpa_value,
+                c.class_name,
+                co.course_name
                 FROM grades g
                 JOIN class c ON g.class_id = c.id
                 JOIN courses co ON c.course_id = co.id
                 WHERE g.student_id = (SELECT id FROM student_details WHERE user_id = ?)
-            ");
+                ");
             $stmt->execute([$userId ?? $student['user_id']]);
             $student['subject_grades'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
         }
@@ -463,7 +569,8 @@ function getStudentDetails() {
     }
 }
 
-function getTeacherDetails() {
+function getTeacherDetails()
+{
     global $pdo;
     if ($_SESSION['role'] !== 'teacher' && $_SESSION['role'] !== 'admin') {
         return "Unauthorized";
@@ -495,7 +602,8 @@ function getTeacherDetails() {
 }
 
 // Helper function to calculate grade and GPA from score
-function calculateGradeAndGpa($score) {
+function calculateGradeAndGpa($score)
+{
     if ($score >= 85 && $score <= 100) return ['grade' => 'A', 'gpa' => 4.0];
     if ($score >= 80 && $score <= 84) return ['grade' => 'B+', 'gpa' => 3.5];
     if ($score >= 70 && $score <= 79) return ['grade' => 'B', 'gpa' => 3.0];
@@ -506,7 +614,8 @@ function calculateGradeAndGpa($score) {
 }
 
 // New function to update or insert grades (for admin use)
-function updateGrade($data) {
+function updateGrade($data)
+{
     global $pdo;
     checkRole('admin');
     try {
@@ -543,19 +652,22 @@ function updateGrade($data) {
     }
 }
 
-function generateCsrfToken() {
-	$_SESSION['csrf_token'] = bin2hex(random_bytes(32));
-	error_log("Generated CSRF token: " . $_SESSION['csrf_token']);
-	return $_SESSION['csrf_token'];
+function generateCsrfToken()
+{
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+    error_log("Generated CSRF token: " . $_SESSION['csrf_token']);
+    return $_SESSION['csrf_token'];
 }
 
-function verifyCsrfToken($token) {
-	$result = isset($_SESSION['csrf_token']) && hash_equals($_SESSION['csrf_token'], $token);
-	error_log("Verifying CSRF token. Session: " . ($_SESSION['csrf_token'] ?? 'none') . ", Sent: " . ($token ?? 'none') . ", Result: " . ($result ? 'true' : 'false'));
-	return $result;
+function verifyCsrfToken($token)
+{
+    $result = isset($_SESSION['csrf_token']) && hash_equals($_SESSION['csrf_token'], $token);
+    error_log("Verifying CSRF token. Session: " . ($_SESSION['csrf_token'] ?? 'none') . ", Sent: " . ($token ?? 'none') . ", Result: " . ($result ? 'true' : 'false'));
+    return $result;
 }
 
-function generatePasswordResetToken() {
+function generatePasswordResetToken()
+{
     global $pdo;
     try {
         error_log("Generating reset token for user ID: " . ($_SESSION['user_id'] ?? 'none'));
@@ -594,7 +706,8 @@ function generatePasswordResetToken() {
     }
 }
 
-function resetPassword($token, $newPassword) {
+function resetPassword($token, $newPassword)
+{
     global $pdo;
     try {
         $stmt = $pdo->prepare("SELECT id FROM users WHERE password_reset_token = ? AND password_reset_expiry > NOW()");
@@ -613,7 +726,8 @@ function resetPassword($token, $newPassword) {
 }
 
 // New function to get table fields
-function getTableFields($table) {
+function getTableFields($table)
+{
     global $pdo;
     $current_db = $pdo->query("SELECT DATABASE()")->fetchColumn();
     error_log("getTableFields: Current database: $current_db, Table: $table");
@@ -634,7 +748,7 @@ function getTableFields($table) {
         $fields = $stmt->fetchAll(PDO::FETCH_COLUMN, 0); // Fetch the 'Field' column
         // Filter out hidden fields
         $hiddenFields = ['password']; // Add more as needed
-        $visibleFields = array_filter($fields, function($field) use ($hiddenFields) {
+        $visibleFields = array_filter($fields, function ($field) use ($hiddenFields) {
             return !in_array($field, $hiddenFields);
         });
         return array_values($visibleFields); // Re-index array
@@ -644,7 +758,8 @@ function getTableFields($table) {
 }
 
 // Update Users Record
-function updateUsersRecord($data) {
+function updateUsersRecord($data)
+{
     global $pdo;
     checkRole('admin');
     try {
@@ -686,7 +801,8 @@ function updateUsersRecord($data) {
 }
 
 // Update Student Details Record
-function updateStudentDetailsRecord($data) {
+function updateStudentDetailsRecord($data)
+{
     global $pdo;
     checkRole('admin');
     try {
@@ -717,7 +833,8 @@ function updateStudentDetailsRecord($data) {
 }
 
 // Update Teacher Details Record
-function updateTeacherDetailsRecord($data) {
+function updateTeacherDetailsRecord($data)
+{
     global $pdo;
     checkRole('admin');
     try {
@@ -746,7 +863,8 @@ function updateTeacherDetailsRecord($data) {
 }
 
 // Update Courses Record
-function updateCoursesRecord($data) {
+function updateCoursesRecord($data)
+{
     global $pdo;
     checkRole('admin');
     try {
@@ -766,7 +884,8 @@ function updateCoursesRecord($data) {
 }
 
 // Update Class Record
-function updateClassRecord($data) {
+function updateClassRecord($data)
+{
     global $pdo;
     checkRole('admin');
     try {
@@ -790,7 +909,8 @@ function updateClassRecord($data) {
 }
 
 // Update Enrollments Record
-function updateEnrollmentsRecord($data) {
+function updateEnrollmentsRecord($data)
+{
     global $pdo;
     checkRole('admin');
     try {
@@ -808,7 +928,8 @@ function updateEnrollmentsRecord($data) {
 }
 
 // Update Grades Record
-function updateGradesRecord($data) {
+function updateGradesRecord($data)
+{
     global $pdo;
     checkRole('admin');
     try {
@@ -830,7 +951,8 @@ function updateGradesRecord($data) {
 }
 
 // Delete Users Record
-function deleteUsersRecord($id) {
+function deleteUsersRecord($id)
+{
     global $pdo;
     checkRole('admin');
     try {
@@ -863,7 +985,8 @@ function deleteUsersRecord($id) {
 }
 
 // Delete Student Details Record
-function deleteStudentDetailsRecord($id) {
+function deleteStudentDetailsRecord($id)
+{
     global $pdo;
     checkRole('admin');
     try {
@@ -886,7 +1009,8 @@ function deleteStudentDetailsRecord($id) {
 }
 
 // Delete Teacher Details Record
-function deleteTeacherDetailsRecord($id) {
+function deleteTeacherDetailsRecord($id)
+{
     global $pdo;
     checkRole('admin');
     try {
@@ -909,7 +1033,8 @@ function deleteTeacherDetailsRecord($id) {
 }
 
 // Delete Record Functions
-function deleteCoursesRecord($id) {
+function deleteCoursesRecord($id)
+{
     global $pdo;
     checkRole('admin');
     try {
@@ -920,7 +1045,8 @@ function deleteCoursesRecord($id) {
     }
 }
 
-function deleteClassRecord($id) {
+function deleteClassRecord($id)
+{
     global $pdo;
     checkRole('admin');
     try {
@@ -931,7 +1057,8 @@ function deleteClassRecord($id) {
     }
 }
 
-function deleteEnrollmentsRecord($id) {
+function deleteEnrollmentsRecord($id)
+{
     global $pdo;
     checkRole('admin');
     try {
@@ -942,7 +1069,8 @@ function deleteEnrollmentsRecord($id) {
     }
 }
 
-function deleteGradesRecord($id) {
+function deleteGradesRecord($id)
+{
     global $pdo;
     checkRole('admin');
     try {
@@ -972,57 +1100,57 @@ if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST') 
     header('Content-Type: application/json');
     try {
         error_log("Session CSRF: " . ($_SESSION['csrf_token'] ?? 'none') . ", Sent CSRF: " . ($_POST['csrf_token'] ?? 'none'));
-	if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
-	    error_log("CSRF token validation failed.");
+        if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+            error_log("CSRF token validation failed.");
             echo json_encode(['result' => 'Error: Invalid CSRF token']);
             exit;
         }
-	$action = $_POST['action'] ?? '';
-	error_log("Processing action: $action");
+        $action = $_POST['action'] ?? '';
+        error_log("Processing action: $action");
         $result = '';
 
-	switch ($action) {
-	    case 'create_student':
-	        $result = createStudent($_POST, $_FILES);
-	        break;
-	    case 'create_teacher':
-	        $result = createTeacher($_POST, $_FILES);
-        	break;
-	    case 'create_course':
-        	$result = createCourse($_POST);
-	        break;
-	    case 'create_class':
-        	$result = createClass($_POST);
-	        break;
-	    case 'create_enrollment':
-        	$result = createEnrollment($_POST);
-	        break;
-	    case 'show_table':
-        	$result = showTable($_POST['table']);
-	        break;
-	    case 'get_student_details':
-        	$result = getStudentDetails();
-	        break;
-	    case 'get_teacher_details':
-        	$result = getTeacherDetails();
-	        break;
-	    case 'generate_reset_token':
-        	$result = generatePasswordResetToken();
-	        break;
-	    case 'reset_password':
-        	$result = resetPassword($_POST['token'], $_POST['new_password']);
-		break;
-	    case 'update_grade':
-        	$result = updateGrade($_POST);
-	        break;
-	    case 'check_expired_accounts':
-        	checkRole('admin');
-	        $result = checkAndUpdateExpiredAccounts();
-        	break;
-	    case 'get_table_fields':
-        	$result = getTableFields($_POST['table']);
-		break;
-	    case 'update_courses_record':
+        switch ($action) {
+            case 'create_student':
+                $result = createStudent($_POST, $_FILES);
+                break;
+            case 'create_teacher':
+                $result = createTeacher($_POST, $_FILES);
+                break;
+            case 'create_course':
+                $result = createCourse($_POST);
+                break;
+            case 'create_class':
+                $result = createClass($_POST);
+                break;
+            case 'create_enrollment':
+                $result = createEnrollment($_POST);
+                break;
+            case 'show_table':
+                $result = showTable($_POST['table']);
+                break;
+            case 'get_student_details':
+                $result = getStudentDetails();
+                break;
+            case 'get_teacher_details':
+                $result = getTeacherDetails();
+                break;
+            case 'generate_reset_token':
+                $result = generatePasswordResetToken();
+                break;
+            case 'reset_password':
+                $result = resetPassword($_POST['token'], $_POST['new_password']);
+                break;
+            case 'update_grade':
+                $result = updateGrade($_POST);
+                break;
+            case 'check_expired_accounts':
+                checkRole('admin');
+                $result = checkAndUpdateExpiredAccounts();
+                break;
+            case 'get_table_fields':
+                $result = getTableFields($_POST['table']);
+                break;
+            case 'update_courses_record':
                 $result = updateCoursesRecord(json_decode($_POST['data'], true));
                 break;
             case 'update_class_record':
@@ -1034,26 +1162,26 @@ if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST') 
             case 'update_grades_record':
                 $result = updateGradesRecord(json_decode($_POST['data'], true));
                 break;
-           case 'update_student_details_record':
+            case 'update_student_details_record':
                 $result = updateStudentDetailsRecord(json_decode($_POST['data'], true));
                 break;
             case 'update_teacher_details_record':
                 $result = updateTeacherDetailsRecord(json_decode($_POST['data'], true));
                 break;
 
-	    case 'update_users_record':
+            case 'update_users_record':
                 $result = updateUsersRecord(json_decode($_POST['data'], true));
-		break;
-	    case 'delete_users_record':
+                break;
+            case 'delete_users_record':
                 $result = deleteUsersRecord($_POST['id']);
-		break;
-	    case 'delete_student_details_record':
-		    $result = deleteStudentDetailsRecord($_POST['id']);
-		    break;
-	    case 'delete_teacher_details_record':
-		    $result = deleteTeacherDetailsRecords($_POST['id']);
-		   break; 
-	    case 'delete_courses_record':
+                break;
+            case 'delete_student_details_record':
+                $result = deleteStudentDetailsRecord($_POST['id']);
+                break;
+            // case 'delete_teacher_details_record':
+            //     $result = deleteTeacherDetailsRecords($_POST['id']);
+            //     break;
+            case 'delete_courses_record':
                 $result = deleteCoursesRecord($_POST['id']);
                 break;
             case 'delete_class_record':
@@ -1064,17 +1192,17 @@ if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST') 
                 break;
             case 'delete_grades_record':
                 $result = deleteGradesRecord($_POST['id']);
-		break;
+                break;
 
-	    default:
-        	error_log("Unknown action: $action");
-	        $result = "Unknown action";
-        	break;
-	}
+            default:
+                error_log("Unknown action: $action");
+                $result = "Unknown action";
+                break;
+        }
 
         echo json_encode(['result' => $result]);
     } catch (Exception $e) {
-	error_log("Exception in POST handler: " . $e->getMessage());
+        error_log("Exception in POST handler: " . $e->getMessage());
         echo json_encode(['result' => 'Error: ' . $e->getMessage()]);
     }
     ob_end_flush();
@@ -1083,5 +1211,3 @@ if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST') 
 
 // For GET requests, allow the script to continue (e.g., for index.php rendering)
 ob_end_flush();
-
-?>
