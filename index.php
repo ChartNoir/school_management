@@ -364,23 +364,36 @@ error_log("Generated CSRF token in index.php: " . $csrf_token);
 				</form>
 			</div>
 
-			<!-- Admin View: Edit Records -->
+			<!-- Admin View: View & Export Records -->
 			<div id="edit-section" class="form-section" style="display: none;">
-				<h2>Edit Records</h2>
+				<h2>View & Export Records</h2>
 				<form id="editRecordsForm">
-					<div class="mb-3">
-						<label for="editTableSelector" class="form-label">Select Table to Edit:</label>
-						<select id="editTableSelector" class="form-select" onchange="loadEditFieldOptions()">
-							<option value="">Select a table</option>
-							<option value="users">Users</option>
-							<option value="student_details">Student Details</option>
-							<option value="teacher_details">Teacher Details</option>
-							<option value="courses">Courses</option>
-							<option value="class">Classes</option>
-							<option value="enrollments">Enrollments</option>
-							<option value="grades">Grades</option>
-						</select>
+					<div class="row">
+						<div class="col-md-6 mb-3">
+							<label for="editTableSelector" class="form-label">Select Table:</label>
+							<select id="editTableSelector" class="form-select" onchange="loadEditFieldOptions()">
+								<option value="">Select a table</option>
+								<option value="users">Users</option>
+								<option value="student_details">Student Details</option>
+								<option value="teacher_details">Teacher Details</option>
+								<option value="courses">Courses</option>
+								<option value="class">Classes</option>
+								<option value="enrollments">Enrollments</option>
+								<option value="grades">Grades</option>
+							</select>
+						</div>
+
+						<!-- User active filter (only for users table) -->
+						<div class="col-md-6 mb-3" id="userActiveFilterContainer" style="display: none;">
+							<label for="userActiveFilter" class="form-label">Filter by Active Status:</label>
+							<select id="userActiveFilter" class="form-select">
+								<option value="">All Users</option>
+								<option value="true">Active Users Only</option>
+								<option value="false">Inactive Users Only</option>
+							</select>
+						</div>
 					</div>
+
 					<!-- Field Filter Dropdown -->
 					<div class="mb-3">
 						<label class="form-label">Select Fields to Display:</label>
@@ -393,10 +406,27 @@ error_log("Generated CSRF token in index.php: " . $csrf_token);
 							</ul>
 						</div>
 					</div>
-					<button id="loadEditRecordsBtn" class="btn btn-primary" type="button" onclick="loadEditRecords(1)">Load Records</button>
-					<button id="resetEditFilterBtn" class="btn btn-secondary" type="button" onclick="resetEditFilters()">Reset Filters</button>
+
+					<div class="d-flex flex-wrap gap-2 mb-3">
+						<button id="loadEditRecordsBtn" class="btn btn-primary" type="button" onclick="loadEditRecords(1)">View Records</button>
+						<button id="resetEditFilterBtn" class="btn btn-secondary" type="button" onclick="resetEditFilters()">Reset Filters</button>
+					</div>
+
+					<!-- Export Buttons -->
+					<div class="export-buttons">
+						<label class="form-label">Export Data:</label>
+						<div class="d-flex flex-wrap gap-2">
+							<button type="button" class="btn btn-success" onclick="exportRecords('csv')">
+								<i class="bi bi-file-earmark-spreadsheet"></i> Export as CSV
+							</button>
+							<button type="button" class="btn btn-success" onclick="exportRecords('excel')">
+								<i class="bi bi-file-earmark-excel"></i> Export as Excel
+							</button>
+						</div>
+						<small class="text-muted d-block mt-1">Note: Export will use the table and field selections above.</small>
+					</div>
 				</form>
-				<div id="editRecordsOutput" class="table-section"></div>
+				<div id="editRecordsOutput" class="table-section mt-4"></div>
 			</div>
 
 		<?php endif; ?>

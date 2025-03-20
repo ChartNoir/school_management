@@ -8,6 +8,8 @@ if (session_status() === PHP_SESSION_NONE) {
 }
 ob_start();
 
+
+
 function checkRole($role)
 {
     if (!isset($_SESSION['role']) || $_SESSION['role'] !== $role) {

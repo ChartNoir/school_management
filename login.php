@@ -134,7 +134,8 @@ $csrf_token = generateCsrfToken();
         <!-- Links -->
         <div class="links">
             <a href="#" onclick="toggleForgotPassword()">Forgot Password?</a> |
-            <a href="reset_password.php">Already have token?</a>
+            <a href="reset_password.php">Already have token?</a><br>
+            <a href="register.php">New Student? Register here</a>
         </div>
 
         <!-- Forgot Password Form -->

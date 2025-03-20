@@ -1,5 +1,153 @@
-// Validation Functions
+// Profile Image Upload Functions
+function openProfileImageUpload() {
+  // Reset form and preview
+  document.getElementById("profileImageForm").reset();
+  document.getElementById("imagePreview").style.display = "none";
+  document.getElementById("uploadStatus").style.display = "none";
+  document.getElementById("uploadStatus").innerHTML = "";
 
+  // Show modal
+  const modal = new bootstrap.Modal(
+    document.getElementById("profileImageModal")
+  );
+  modal.show();
+
+  // Close profile menu
+  toggleProfileMenu();
+}
+
+// Image preview functionality
+document
+  .getElementById("profileImageInput")
+  ?.addEventListener("change", function () {
+    const preview = document.getElementById("imagePreview");
+    const previewImg = preview.querySelector("img");
+
+    if (this.files && this.files[0]) {
+      const file = this.files[0];
+
+      // Check file size (max 5MB)
+      if (file.size > 5 * 1024 * 1024) {
+        alert("File is too large. Maximum size is 5MB.");
+        this.value = "";
+        preview.style.display = "none";
+        return;
+      }
+
+      // Check file type
+      const validTypes = ["image/jpeg", "image/png", "image/gif", "image/jpg"];
+      if (!validTypes.includes(file.type)) {
+        alert("Invalid file type. Only JPG, JPEG, PNG and GIF are allowed.");
+        this.value = "";
+        preview.style.display = "none";
+        return;
+      }
+
+      // Show preview
+      const reader = new FileReader();
+      reader.onload = function (e) {
+        previewImg.src = e.target.result;
+        preview.style.display = "block";
+      };
+      reader.readAsDataURL(file);
+    } else {
+      preview.style.display = "none";
+    }
+  });
+
+// Handle form submission
+document
+  .getElementById("profileImageForm")
+  ?.addEventListener("submit", function (e) {
+    e.preventDefault();
+
+    const formData = new FormData(this);
+    const uploadStatus = document.getElementById("uploadStatus");
+
+    // Show loading message
+    uploadStatus.innerHTML =
+      '<div class="alert alert-info">Uploading image, please wait...</div>';
+    uploadStatus.style.display = "block";
+
+    fetch("upload_image.php", {
+      method: "POST",
+      body: formData,
+    })
+      .then((response) => response.json())
+      .then((data) => {
+        if (data.success) {
+          // Show success message
+          uploadStatus.innerHTML =
+            '<div class="alert alert-success">' + data.message + "</div>";
+
+          // Update profile images on the page
+          if (data.imageUrl) {
+            // Update main profile image in header
+            const profileImage = document.querySelector(".profile-image");
+            if (profileImage) {
+              profileImage.style.backgroundImage =
+                'url("' + data.imageUrl + '")';
+            }
+
+            // Update other profile images if they exist
+            const otherProfileImages = document.querySelectorAll(
+              ".user-profile-image"
+            );
+            otherProfileImages.forEach((img) => {
+              img.style.backgroundImage = 'url("' + data.imageUrl + '")';
+            });
+          }
+
+          // Close modal after 2 seconds
+          setTimeout(() => {
+            const modal = bootstrap.Modal.getInstance(
+              document.getElementById("profileImageModal")
+            );
+            modal.hide();
+          }, 2000);
+        } else {
+          // Show error message
+          uploadStatus.innerHTML =
+            '<div class="alert alert-danger">' + data.message + "</div>";
+        }
+      })
+      .catch((error) => {
+        console.error("Error:", error);
+        uploadStatus.innerHTML =
+          '<div class="alert alert-danger">Upload failed: ' +
+          error.message +
+          "</div>";
+      });
+  });
+
+// Export Records Function
+function exportRecords(format) {
+  const table = document.getElementById("editTableSelector").value;
+  if (!table) {
+    alert("Please select a table to export.");
+    return;
+  }
+  const checkboxes = document.querySelectorAll(
+    '#editFieldFilterMenu input[type="checkbox"]:checked'
+  );
+  const selectedFields = Array.from(checkboxes).map(
+    (checkbox) => checkbox.value
+  );
+  let url = `export.php?table=${table}&format=${format}&csrf_token=${window.csrfToken}`;
+  if (selectedFields.length > 0) {
+    url += `&fields=${selectedFields.join(",")}`;
+  }
+
+  if (table === "users" && document.getElementById("userActiveFilter")) {
+    const activeFilter = document.getElementById("userActiveFilter").value;
+    if (activeFilter !== "") {
+      url += `&is_active=${activeFilter}`;
+    }
+  }
+
+  window.open(url, "_blank");
+}
+// Validation Functions
 function validateForm(formId) {
   const form = document.getElementById(formId);
   const inputs = form.querySelectorAll("input[required], textarea[required]");

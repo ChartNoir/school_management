@@ -20,12 +20,14 @@ if ($user_id) {
 
 <!DOCTYPE html>
 <html>
+
 <head>
     <meta charset="UTF-8">
     <title>School Management System</title>
     <link rel="stylesheet" href="includes/style.css">
     <link rel="icon" href="data:;base64,iVBORw0KGgo=">
 </head>
+
 <body>
     <header>
         <nav>
@@ -36,17 +38,18 @@ if ($user_id) {
                 <a href="#" onclick="showSection('class')">Manage Classes</a>
                 <a href="#" onclick="showSection('enrollment')">Manage Enrollments</a>
                 <a href="#" onclick="showSection('updateGrades')">Manage Grades</a>
-		<a href="#" onclick="showSection('edit')">View Records</a>
+                <a href="#" onclick="showSection('edit')">View & Export Records</a>
             <?php endif; ?>
         </nav>
         <div class="user-profile" onclick="toggleProfileMenu()">
             <div class="profile-image" style="background-image: url('<?php echo htmlspecialchars($profile_image); ?>');"></div>
             <span><?php echo $username; ?></span>
             <div id="profileMenu" class="profile-menu">
+                <button onclick="openProfileImageUpload()">Change Profile Picture</button>
                 <button onclick="showPasswordPrompt()">Reset Password</button>
                 <?php if (isset($_SESSION['role']) && ($_SESSION['role'] === 'student' || $_SESSION['role'] === 'teacher')): ?>
                     <button onclick="window.location.href='my_details.php'">My Details</button>
-                <?php endif; ?> 
+                <?php endif; ?>
                 <form method="POST" action="logout.php" style="margin: 0;">
                     <button type="submit">Logout</button>
                 </form>
