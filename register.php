@@ -22,132 +22,126 @@ function generateStudentId()
 {
     global $pdo;
 
-    // Get the last student_id to increment it
-    $stmt = $pdo->query("SELECT student_id FROM student_details ORDER BY id DESC LIMIT 1");
-    $lastId = $stmt->fetchColumn();
+    // Maximum attempts to generate a unique ID
+    $maxAttempts = 100;
 
-    if ($lastId) {
-        // Extract the numeric part
-        preg_match('/S(\d+)/', $lastId, $matches);
-        if (isset($matches[1])) {
-            $numericPart = intval($matches[1]);
-            $newNumericPart = $numericPart + 1;
-            return 'S' . str_pad($newNumericPart, 5, '0', STR_PAD_LEFT);
+    for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+        // Get the last student ID
+        $stmt = $pdo->query("SELECT student_id FROM student_details ORDER BY id DESC LIMIT 1");
+        $lastId = $stmt->fetchColumn();
+
+        // Generate new student ID
+        if ($lastId) {
+            // Extract numeric part
+            preg_match('/S(\d+)/', $lastId, $matches);
+            $numericPart = isset($matches[1]) ? intval($matches[1]) + 1 : 1;
+        } else {
+            // Start with first student ID if no previous IDs exist
+            $numericPart = 1;
+        }
+
+        // Format the new student ID
+        $newStudentId = 'S' . str_pad($numericPart, 5, '0', STR_PAD_LEFT);
+
+        // Check if the ID is unique
+        $checkStmt = $pdo->prepare("SELECT COUNT(*) FROM student_details WHERE student_id = ?");
+        $checkStmt->execute([$newStudentId]);
+
+        // If the ID is unique, return it
+        if ($checkStmt->fetchColumn() == 0) {
+            return $newStudentId;
         }
     }
 
-    // If no existing student IDs or pattern not matched, start with S00001
-    return 'S00001';
+    // If we can't generate a unique ID after max attempts, 
+    // generate a random unique ID
+    do {
+        $randomId = 'S' . str_pad(mt_rand(1, 99999), 5, '0', STR_PAD_LEFT);
+        $checkStmt = $pdo->prepare("SELECT COUNT(*) FROM student_details WHERE student_id = ?");
+        $checkStmt->execute([$randomId]);
+    } while ($checkStmt->fetchColumn() > 0);
+
+    return $randomId;
 }
 
-// Registration function with debugging
 function registerStudent($data, $files)
 {
     global $pdo;
+
     try {
-        // ULTRA VERBOSE LOGGING
-        error_log("===== REGISTRATION DEBUG START =====");
-        error_log("Received POST Data: " . print_r($data, true));
-
-        // Extensive FILES array debugging
-        error_log("Received FILES Data: " . print_r($files, true));
-
+        // Start transaction
         $pdo->beginTransaction();
 
-        // Check if username already exists
-        $stmt = $pdo->prepare("SELECT COUNT(*) FROM users WHERE username = ?");
-        $stmt->execute([$data['username']]);
-        if ($stmt->fetchColumn() > 0) {
-            return "Username already exists";
+        // Check for existing username or email
+        $checkStmt = $pdo->prepare("
+            SELECT 
+                (SELECT COUNT(*) FROM users WHERE username = ?) as username_count,
+                (SELECT COUNT(*) FROM users WHERE email = ?) as email_count
+        ");
+        $checkStmt->execute([$data['username'], $data['email']]);
+        $checkResult = $checkStmt->fetch(PDO::FETCH_ASSOC);
+
+        if ($checkResult['username_count'] > 0) {
+            throw new Exception("Username already exists");
         }
 
-        // Check if email already exists
-        $stmt = $pdo->prepare("SELECT COUNT(*) FROM users WHERE email = ?");
-        $stmt->execute([$data['email']]);
-        if ($stmt->fetchColumn() > 0) {
-            return "Email already exists";
+        if ($checkResult['email_count'] > 0) {
+            throw new Exception("Email already exists");
         }
 
-        // Handle profile image upload
+        // Prepare profile image
         $profileImageUrl = null;
-
-        // Comprehensive file check
-        if (isset($files['profile_image'])) {
-            error_log("Profile Image Input Details:");
-            error_log("Temp Name: " . ($files['profile_image']['tmp_name'] ?? 'N/A'));
-            error_log("Original Name: " . ($files['profile_image']['name'] ?? 'N/A'));
-            error_log("File Size: " . ($files['profile_image']['size'] ?? 'N/A'));
-            error_log("File Type: " . ($files['profile_image']['type'] ?? 'N/A'));
-            error_log("File Error: " . ($files['profile_image']['error'] ?? 'N/A'));
-        } else {
-            error_log("NO PROFILE IMAGE FOUND IN FILES ARRAY");
-        }
-
-        // Check if profile image is uploaded
-        if (!empty($files['profile_image']) && $files['profile_image']['error'] === UPLOAD_ERR_OK) {
-            // Attempt Cloudinary upload
-            $uploadResult = uploadToCloudinary($files['profile_image'], 'student_images');
-
-            error_log("Cloudinary Upload Result: " . print_r($uploadResult, true));
-
-            // Only set profile image URL if upload is successful
-            if (is_array($uploadResult) && isset($uploadResult['url'])) {
-                $profileImageUrl = $uploadResult['url'];
-                error_log("SUCCESSFUL IMAGE UPLOAD URL: " . $profileImageUrl);
-            } else {
-                // If upload fails, log the error
-                error_log(
-                    "UPLOAD FAILED: " .
-                        (is_string($uploadResult) ? $uploadResult : 'Unknown upload error')
-                );
+        if (!empty($files['profile_image']['tmp_name'])) {
+            try {
+                $uploadResult = uploadToCloudinary($files['profile_image'], 'student_images');
+                if (is_array($uploadResult) && isset($uploadResult['url'])) {
+                    $profileImageUrl = $uploadResult['url'];
+                }
+            } catch (Exception $uploadError) {
+                error_log("Profile image upload failed: " . $uploadError->getMessage());
             }
         }
 
-        // Log final image URL before insertion
-        error_log("FINAL PROFILE IMAGE URL FOR DATABASE: " . ($profileImageUrl ?? 'NULL'));
-
-        // Create user account with default password
+        // Generate default password
         $defaultPassword = 'default123';
         $hashedPassword = password_hash($defaultPassword, PASSWORD_BCRYPT);
 
-        // Insert user with profile image
-        $stmt = $pdo->prepare("
+        // Insert user
+        $userStmt = $pdo->prepare("
             INSERT INTO users 
-            (username, email, password, role, profile_image) 
-            VALUES (?, ?, ?, 'student', ?)
+            (username, email, password, role, profile_image, is_active) 
+            VALUES (?, ?, ?, 'student', ?, 1)
         ");
-        $userInsertResult = $stmt->execute([
+
+        $userInsertResult = $userStmt->execute([
             $data['username'],
             $data['email'],
             $hashedPassword,
             $profileImageUrl
         ]);
 
-        // Log insert details
-        error_log("USER INSERT RESULT: " . ($userInsertResult ? 'SUCCESS' : 'FAILED'));
-        error_log("PDO ERROR INFO: " . print_r($stmt->errorInfo(), true));
-
-        if (!$userInsertResult) {
-            $errorInfo = $stmt->errorInfo();
-            throw new Exception("Failed to create user: " . $errorInfo[2]);
-        }
-
+        // Get the last inserted user ID
         $userId = $pdo->lastInsertId();
 
-        // Create student details
+        // Generate student ID
+        $studentId = generateStudentId();
+
+        // Calculate dates
         $enrollmentDate = date('Y-m-d');
         $graduationDate = date('Y-m-d', strtotime('+4 years'));
 
-        $stmt = $pdo->prepare("
+        // Insert student details
+        $studentStmt = $pdo->prepare("
             INSERT INTO student_details 
             (user_id, full_name, student_id, enrollment_date, graduation_date, 
              phone_number, address, course_id) 
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ");
-        $studentInsertResult = $stmt->execute([
+
+        $studentInsertResult = $studentStmt->execute([
             $userId,
             $data['full_name'],
-            generateStudentId(), // Assuming this function exists
+            $studentId,
             $enrollmentDate,
             $graduationDate,
             $data['phone'] ?? null,
@@ -155,34 +149,28 @@ function registerStudent($data, $files)
             $data['course_id']
         ]);
 
-        if (!$studentInsertResult) {
-            $errorInfo = $stmt->errorInfo();
-            throw new Exception("Failed to create student details: " . $errorInfo[2]);
-        }
-
         // Commit transaction
         $pdo->commit();
 
-        error_log("===== REGISTRATION SUCCESSFUL =====");
-
-        // Return registration details
         return [
             'success' => true,
-            'student_id' => generateStudentId(),
+            'student_id' => $studentId,
             'password' => $defaultPassword,
             'profile_image' => $profileImageUrl
         ];
     } catch (Exception $e) {
-        // Rollback transaction on error
+        // Always rollback on error
         if ($pdo->inTransaction()) {
             $pdo->rollBack();
         }
 
-        // Log and return error
-        error_log("REGISTRATION FINAL EXCEPTION: " . $e->getMessage());
-        return "Registration failed: " . $e->getMessage();
+        // Log detailed error
+        error_log("Registration Error: " . $e->getMessage());
+
+        return $e->getMessage();
     }
 }
+
 // Generate CSRF token
 $csrf_token = generateCsrfToken();
 
