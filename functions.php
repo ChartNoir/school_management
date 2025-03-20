@@ -3,13 +3,169 @@ ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
 require_once 'config.php';
+require_once 'cloudinary.php';
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 ob_start();
 
+function registerStudent($data, $files)
+{
+    global $pdo;
+    try {
+        // ULTRA VERBOSE LOGGING
+        error_log("===== REGISTRATION DEBUG START =====");
+        error_log("Received POST Data: " . print_r($data, true));
 
+        // Extensive FILES array debugging
+        error_log("Received FILES Data: " . print_r($files, true));
 
+        // Check PHP configuration
+        error_log("PHP Upload Settings:");
+        error_log("file_uploads: " . ini_get('file_uploads'));
+        error_log("upload_max_filesize: " . ini_get('upload_max_filesize'));
+        error_log("post_max_size: " . ini_get('post_max_size'));
+
+        // Comprehensive file existence and validity check
+        $profileImageUrl = null;
+        if (isset($files['profile_image'])) {
+            error_log("Profile Image Detailed Check:");
+            error_log("Error Code: " . $files['profile_image']['error']);
+            error_log("Temp Name: " . ($files['profile_image']['tmp_name'] ?? 'N/A'));
+            error_log("Original Name: " . ($files['profile_image']['name'] ?? 'N/A'));
+            error_log("File Size: " . ($files['profile_image']['size'] ?? 'N/A'));
+            error_log("File Type: " . ($files['profile_image']['type'] ?? 'N/A'));
+        } else {
+            error_log("NO PROFILE IMAGE FOUND IN FILES ARRAY");
+        }
+
+        // Enhanced Profile Image Upload Logic
+        $uploadResult = null;
+        if (
+            isset($files['profile_image']) &&
+            $files['profile_image']['error'] === UPLOAD_ERR_OK &&
+            $files['profile_image']['size'] > 0
+        ) {
+            try {
+                // Attempt Cloudinary upload
+                $uploadResult = uploadToCloudinary($files['profile_image'], 'student_images');
+
+                error_log("Cloudinary Upload Result: " . print_r($uploadResult, true));
+
+                if (is_array($uploadResult) && isset($uploadResult['url'])) {
+                    $profileImageUrl = $uploadResult['url'];
+                    error_log("SUCCESSFUL IMAGE UPLOAD: " . $profileImageUrl);
+                } else {
+                    error_log(
+                        "UPLOAD FAILED: " .
+                            (is_string($uploadResult) ? $uploadResult : 'Unknown upload error')
+                    );
+                }
+            } catch (Exception $e) {
+                error_log("UPLOAD EXCEPTION: " . $e->getMessage());
+            }
+        }
+
+        // Log final image URL status
+        error_log("FINAL PROFILE IMAGE URL: " . ($profileImageUrl ?? 'NULL'));
+
+        // Rest of the registration logic remains the same
+        $pdo->beginTransaction();
+
+        // Check username uniqueness
+        $stmt = $pdo->prepare("SELECT COUNT(*) FROM users WHERE username = ?");
+        $stmt->execute([$data['username']]);
+        if ($stmt->fetchColumn() > 0) {
+            throw new Exception("Username already exists");
+        }
+
+        // Check email uniqueness
+        $stmt = $pdo->prepare("SELECT COUNT(*) FROM users WHERE email = ?");
+        $stmt->execute([$data['email']]);
+        if ($stmt->fetchColumn() > 0) {
+            throw new Exception("Email already exists");
+        }
+
+        // Generate student ID
+        $studentId = generateStudentId();
+
+        // Create user account with default password
+        $defaultPassword = 'default123';
+        $hashedPassword = password_hash($defaultPassword, PASSWORD_BCRYPT);
+
+        // Insert user with profile image
+        $stmt = $pdo->prepare("
+            INSERT INTO users 
+            (username, email, password, role, profile_image) 
+            VALUES (?, ?, ?, 'student', ?)
+        ");
+        $userInsertResult = $stmt->execute([
+            $data['username'],
+            $data['email'],
+            $hashedPassword,
+            $profileImageUrl
+        ]);
+
+        // Log insert details
+        error_log("USER INSERT RESULT: " . ($userInsertResult ? 'SUCCESS' : 'FAILED'));
+        error_log("PDO ERROR INFO: " . print_r($stmt->errorInfo(), true));
+
+        if (!$userInsertResult) {
+            $errorInfo = $stmt->errorInfo();
+            throw new Exception("Failed to create user: " . $errorInfo[2]);
+        }
+
+        $userId = $pdo->lastInsertId();
+
+        // Create student details
+        $enrollmentDate = date('Y-m-d');
+        $graduationDate = date('Y-m-d', strtotime('+4 years'));
+
+        $stmt = $pdo->prepare("
+            INSERT INTO student_details 
+            (user_id, full_name, student_id, enrollment_date, graduation_date, 
+             phone_number, address, course_id) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ");
+        $studentInsertResult = $stmt->execute([
+            $userId,
+            $data['full_name'],
+            $studentId,
+            $enrollmentDate,
+            $graduationDate,
+            $data['phone'] ?? null,
+            $data['address'] ?? null,
+            $data['course_id']
+        ]);
+
+        if (!$studentInsertResult) {
+            $errorInfo = $stmt->errorInfo();
+            throw new Exception("Failed to create student details: " . $errorInfo[2]);
+        }
+
+        // Commit transaction
+        $pdo->commit();
+
+        error_log("===== REGISTRATION SUCCESSFUL =====");
+
+        // Return registration details
+        return [
+            'success' => true,
+            'student_id' => $studentId,
+            'password' => $defaultPassword,
+            'profile_image' => $profileImageUrl
+        ];
+    } catch (Exception $e) {
+        // Rollback transaction on error
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+
+        // Log and return error
+        error_log("REGISTRATION FINAL EXCEPTION: " . $e->getMessage());
+        return "Registration failed: " . $e->getMessage();
+    }
+}
 function checkRole($role)
 {
     if (!isset($_SESSION['role']) || $_SESSION['role'] !== $role) {

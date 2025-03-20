@@ -1,144 +1,119 @@
 <?php
-// Cloudinary integration file
-
 // Cloudinary configuration
-define('CLOUDINARY_CLOUD_NAME', 'dxmjvgg1y'); // Replace with your Cloudinary cloud name
-define('CLOUDINARY_API_KEY', '881954448675579'); // Replace with your Cloudinary API key
-define('CLOUDINARY_API_SECRET', 'huYsbjoK7dMg7ATI2uPUGmBFSQE'); // Replace with your Cloudinary API secret
+define('CLOUDINARY_CLOUD_NAME', 'dxmjvgg1y');
+define('CLOUDINARY_API_KEY', '881954448675579');
+define('CLOUDINARY_API_SECRET', 'huYsbjoK7dMg7ATI2uPUGmBFSQE');
 
 /**
- * Upload an image to Cloudinary using unsigned upload
- * 
- * @param array $file $_FILES array element
- * @param string $folder Cloudinary folder to store the image in
- * @return array|string Array with upload details on success, error message on failure
+ * Upload an image to Cloudinary with ULTRA VERBOSE logging
  */
-function uploadToCloudinary($file, $folder = 'school_management')
+function uploadToCloudinary($file, $folder = 'student_images')
 {
-    // Check if file exists and has no errors
-    if (!isset($file) || $file['error'] != 0) {
-        return "File upload error: " . ($file['error'] ?? 'No file provided');
+    error_log("===== CLOUDINARY UPLOAD DEBUG START =====");
+
+    // Validate file existence and initial checks
+    if (!isset($file)) {
+        error_log("NO FILE PROVIDED TO UPLOAD FUNCTION");
+        return "No file provided";
     }
 
-    // Validate file type is an image
-    $allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/jpg'];
-    if (!in_array($file['type'], $allowedTypes)) {
-        return "Invalid file type. Only JPG, JPEG, PNG and GIF are allowed.";
+    error_log("File Details:");
+    error_log("Temp Name: " . ($file['tmp_name'] ?? 'N/A'));
+    error_log("Original Name: " . ($file['name'] ?? 'N/A'));
+    error_log("File Size: " . ($file['size'] ?? 'N/A'));
+    error_log("File Type: " . ($file['type'] ?? 'N/A'));
+    error_log("File Error Code: " . ($file['error'] ?? 'N/A'));
+
+    // Check file error
+    if ($file['error'] !== UPLOAD_ERR_OK) {
+        error_log("FILE UPLOAD ERROR: " . $file['error']);
+        return "File upload error: " . $file['error'];
     }
 
-    // Validate file size (limit to 5MB)
+    // Validate file size and type
     if ($file['size'] > 5 * 1024 * 1024) {
+        error_log("FILE TOO LARGE: " . $file['size'] . " bytes");
         return "File too large. Maximum size is 5MB.";
     }
 
-    // Prepare unique filename
+    $allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/jpg'];
+    if (!in_array($file['type'], $allowedTypes)) {
+        error_log("INVALID FILE TYPE: " . $file['type']);
+        return "Invalid file type. Only JPG, JPEG, PNG and GIF are allowed.";
+    }
+
+    // Prepare upload parameters
+    $timestamp = time();
+    $folder = 'student_images'; // Hardcoded for consistency
     $filename = uniqid() . '_' . preg_replace('/[^a-zA-Z0-9.]/', '_', $file['name']);
 
-    // Prepare API URL for unsigned upload using an upload preset
-    $cloudName = CLOUDINARY_CLOUD_NAME;
-    $uploadPreset = 'student_upload'; // Create this unsigned upload preset in your Cloudinary dashboard
+    // Prepare signature
+    $signature_string = "folder={$folder}&timestamp={$timestamp}" . CLOUDINARY_API_SECRET;
+    $signature = hash('sha256', $signature_string);
 
-    $url = "https://api.cloudinary.com/v1_1/$cloudName/image/upload";
+    // Prepare cURL
+    $url = "https://api.cloudinary.com/v1_1/" . CLOUDINARY_CLOUD_NAME . "/image/upload";
+
+    // Prepare POST fields
+    $postFields = [
+        'file' => new CURLFile($file['tmp_name'], $file['type'], $filename),
+        'api_key' => CLOUDINARY_API_KEY,
+        'timestamp' => $timestamp,
+        'signature' => $signature,
+        'folder' => $folder,
+        'upload_preset' => 'student_upload' // Ensure this preset exists in Cloudinary
+    ];
+
+    error_log("cURL Upload Parameters:");
+    error_log("URL: " . $url);
+    error_log("Timestamp: " . $timestamp);
+    error_log("Signature: " . $signature);
+    error_log("Folder: " . $folder);
 
     // Initialize cURL
     $ch = curl_init($url);
-
-    // Setup cURL options for file upload
     curl_setopt($ch, CURLOPT_POST, true);
-
-    // Create simple form data
-    $postFields = [
-        'file' => new CURLFile($file['tmp_name'], $file['type'], $filename),
-        'upload_preset' => $uploadPreset,
-        'folder' => $folder
-    ];
-
     curl_setopt($ch, CURLOPT_POSTFIELDS, $postFields);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 
-    // Execute cURL session
+    // Execute upload
     $response = curl_exec($ch);
-
-    // Log cURL info for debugging
-    $info = curl_getinfo($ch);
-    error_log("Cloudinary upload HTTP status: " . $info['http_code']);
 
     // Check for cURL errors
     if (curl_errno($ch)) {
         $error = curl_error($ch);
         curl_close($ch);
-        error_log("Cloudinary upload cURL error: " . $error);
-        return "Upload error: $error";
+        error_log("CURL ERROR: " . $error);
+        return "Upload failed: " . $error;
     }
 
-    // Close cURL session
+    // Close cURL
     curl_close($ch);
-
-    // Debug the raw response
-    error_log("Cloudinary raw response: " . $response);
 
     // Parse response
     $result = json_decode($response, true);
 
-    // Check if the result is valid JSON
-    if (json_last_error() !== JSON_ERROR_NONE) {
-        error_log("Cloudinary response is not valid JSON: " . json_last_error_msg());
-        return "Invalid response from Cloudinary server";
-    }
+    // Log full response
+    error_log("CLOUDINARY RESPONSE:");
+    error_log(print_r($result, true));
 
-    // Log the JSON decoded result
-    error_log("Cloudinary decoded result: " . print_r($result, true));
-
-    // Return secure URL if upload successful
+    // Validate upload result
     if (isset($result['secure_url'])) {
+        error_log("===== CLOUDINARY UPLOAD SUCCESSFUL =====");
         return [
             'url' => $result['secure_url'],
             'public_id' => $result['public_id'],
             'format' => $result['format'],
-            'original_filename' => $result['original_filename'],
+            'original_filename' => $filename
         ];
     } else {
-        return "Upload failed: " . (isset($result['error']) ? $result['error']['message'] : 'Unknown error');
+        // Log error details
+        error_log("===== CLOUDINARY UPLOAD FAILED =====");
+        $errorMessage = isset($result['error']['message'])
+            ? $result['error']['message']
+            : 'Unknown Cloudinary upload error';
+
+        error_log("UPLOAD ERROR: " . $errorMessage);
+        return "Upload failed: " . $errorMessage;
     }
-}
-
-/**
- * Delete an image from Cloudinary
- * 
- * @param string $public_id Public ID of the image to delete
- * @return bool True on success, false on failure
- */
-function deleteFromCloudinary($public_id)
-{
-    // Prepare API URL
-    $url = 'https://api.cloudinary.com/v1_1/' . CLOUDINARY_CLOUD_NAME . '/image/destroy';
-
-    // Prepare API parameters
-    $timestamp = time();
-    $to_sign = "public_id=$public_id&timestamp=$timestamp" . CLOUDINARY_API_SECRET;
-    $signature = sha1($to_sign);
-
-    $data = [
-        'public_id' => $public_id,
-        'api_key' => CLOUDINARY_API_KEY,
-        'timestamp' => $timestamp,
-        'signature' => $signature
-    ];
-
-    // Initialize cURL session
-    $ch = curl_init($url);
-    curl_setopt($ch, CURLOPT_POST, true);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, $data);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-
-    // Execute cURL request
-    $response = curl_exec($ch);
-
-    // Close cURL session
-    curl_close($ch);
-
-    // Parse response
-    $result = json_decode($response, true);
-
-    return isset($result['result']) && $result['result'] === 'ok';
 }

@@ -17,7 +17,7 @@ function verifyCsrfToken($token)
     return isset($_SESSION['csrf_token']) && hash_equals($_SESSION['csrf_token'], $token);
 }
 
-// Function to generate student ID
+// Function to generate student ID (based on existing implementation)
 function generateStudentId()
 {
     global $pdo;
@@ -45,6 +45,13 @@ function registerStudent($data, $files)
 {
     global $pdo;
     try {
+        // ULTRA VERBOSE LOGGING
+        error_log("===== REGISTRATION DEBUG START =====");
+        error_log("Received POST Data: " . print_r($data, true));
+
+        // Extensive FILES array debugging
+        error_log("Received FILES Data: " . print_r($files, true));
+
         $pdo->beginTransaction();
 
         // Check if username already exists
@@ -61,54 +68,86 @@ function registerStudent($data, $files)
             return "Email already exists";
         }
 
-        // Generate student ID
-        $studentId = generateStudentId();
-
-        // Handle profile image upload if provided
+        // Handle profile image upload
         $profileImageUrl = null;
-        if (isset($files['profile_image']) && $files['profile_image']['error'] === 0) {
-            error_log("Attempting to upload profile image: " . $files['profile_image']['name']);
+
+        // Comprehensive file check
+        if (isset($files['profile_image'])) {
+            error_log("Profile Image Input Details:");
+            error_log("Temp Name: " . ($files['profile_image']['tmp_name'] ?? 'N/A'));
+            error_log("Original Name: " . ($files['profile_image']['name'] ?? 'N/A'));
+            error_log("File Size: " . ($files['profile_image']['size'] ?? 'N/A'));
+            error_log("File Type: " . ($files['profile_image']['type'] ?? 'N/A'));
+            error_log("File Error: " . ($files['profile_image']['error'] ?? 'N/A'));
+        } else {
+            error_log("NO PROFILE IMAGE FOUND IN FILES ARRAY");
+        }
+
+        // Check if profile image is uploaded
+        if (!empty($files['profile_image']) && $files['profile_image']['error'] === UPLOAD_ERR_OK) {
+            // Attempt Cloudinary upload
             $uploadResult = uploadToCloudinary($files['profile_image'], 'student_images');
 
+            error_log("Cloudinary Upload Result: " . print_r($uploadResult, true));
+
+            // Only set profile image URL if upload is successful
             if (is_array($uploadResult) && isset($uploadResult['url'])) {
                 $profileImageUrl = $uploadResult['url'];
-                error_log("Profile image uploaded successfully to Cloudinary: " . $profileImageUrl);
-            } elseif (is_string($uploadResult)) {
-                // Upload failed, return error message
-                error_log("Profile image upload failed: " . $uploadResult);
-                return "Profile image upload failed: " . $uploadResult;
+                error_log("SUCCESSFUL IMAGE UPLOAD URL: " . $profileImageUrl);
+            } else {
+                // If upload fails, log the error
+                error_log(
+                    "UPLOAD FAILED: " .
+                        (is_string($uploadResult) ? $uploadResult : 'Unknown upload error')
+                );
             }
-        } else {
-            error_log("No profile image provided or upload error: " . ($files['profile_image']['error'] ?? 'No file'));
         }
+
+        // Log final image URL before insertion
+        error_log("FINAL PROFILE IMAGE URL FOR DATABASE: " . ($profileImageUrl ?? 'NULL'));
 
         // Create user account with default password
         $defaultPassword = 'default123';
         $hashedPassword = password_hash($defaultPassword, PASSWORD_BCRYPT);
 
-        error_log("Attempting to insert user with profile image URL: " . ($profileImageUrl ?: 'NULL'));
+        // Insert user with profile image
+        $stmt = $pdo->prepare("
+            INSERT INTO users 
+            (username, email, password, role, profile_image) 
+            VALUES (?, ?, ?, 'student', ?)
+        ");
+        $userInsertResult = $stmt->execute([
+            $data['username'],
+            $data['email'],
+            $hashedPassword,
+            $profileImageUrl
+        ]);
 
-        $stmt = $pdo->prepare("INSERT INTO users (username, email, password, role, profile_image) VALUES (?, ?, ?, 'student', ?)");
-        $executeResult = $stmt->execute([$data['username'], $data['email'], $hashedPassword, $profileImageUrl]);
+        // Log insert details
+        error_log("USER INSERT RESULT: " . ($userInsertResult ? 'SUCCESS' : 'FAILED'));
+        error_log("PDO ERROR INFO: " . print_r($stmt->errorInfo(), true));
 
-        if (!$executeResult) {
+        if (!$userInsertResult) {
             $errorInfo = $stmt->errorInfo();
-            error_log("Database error when inserting user: " . print_r($errorInfo, true));
-            throw new Exception("Database error: " . $errorInfo[2]);
+            throw new Exception("Failed to create user: " . $errorInfo[2]);
         }
 
         $userId = $pdo->lastInsertId();
-        error_log("User created with ID: " . $userId);
 
         // Create student details
         $enrollmentDate = date('Y-m-d');
-        $graduationDate = date('Y-m-d', strtotime('+4 years')); // Default graduation date (4 years from now)
+        $graduationDate = date('Y-m-d', strtotime('+4 years'));
 
-        $stmt = $pdo->prepare("INSERT INTO student_details (user_id, full_name, student_id, enrollment_date, graduation_date, phone_number, address, course_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-        $executeResult = $stmt->execute([
+        $stmt = $pdo->prepare("
+            INSERT INTO student_details 
+            (user_id, full_name, student_id, enrollment_date, graduation_date, 
+             phone_number, address, course_id) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ");
+        $studentInsertResult = $stmt->execute([
             $userId,
             $data['full_name'],
-            $studentId,
+            generateStudentId(), // Assuming this function exists
             $enrollmentDate,
             $graduationDate,
             $data['phone'] ?? null,
@@ -116,32 +155,34 @@ function registerStudent($data, $files)
             $data['course_id']
         ]);
 
-        if (!$executeResult) {
+        if (!$studentInsertResult) {
             $errorInfo = $stmt->errorInfo();
-            error_log("Database error when inserting student details: " . print_r($errorInfo, true));
-            throw new Exception("Database error: " . $errorInfo[2]);
+            throw new Exception("Failed to create student details: " . $errorInfo[2]);
         }
 
-        // Verify the profile image URL was stored correctly
-        $checkStmt = $pdo->prepare("SELECT profile_image FROM users WHERE id = ?");
-        $checkStmt->execute([$userId]);
-        $storedImageUrl = $checkStmt->fetchColumn();
-        error_log("Profile image URL stored in database: " . ($storedImageUrl ?: 'None'));
-
-        // Make sure to commit the transaction
+        // Commit transaction
         $pdo->commit();
-        error_log("Transaction committed successfully");
 
-        return ['success' => true, 'student_id' => $studentId, 'password' => $defaultPassword];
+        error_log("===== REGISTRATION SUCCESSFUL =====");
+
+        // Return registration details
+        return [
+            'success' => true,
+            'student_id' => generateStudentId(),
+            'password' => $defaultPassword,
+            'profile_image' => $profileImageUrl
+        ];
     } catch (Exception $e) {
+        // Rollback transaction on error
         if ($pdo->inTransaction()) {
             $pdo->rollBack();
-            error_log("Transaction rolled back due to error: " . $e->getMessage());
         }
-        return "Registration error: " . $e->getMessage();
+
+        // Log and return error
+        error_log("REGISTRATION FINAL EXCEPTION: " . $e->getMessage());
+        return "Registration failed: " . $e->getMessage();
     }
 }
-
 // Generate CSRF token
 $csrf_token = generateCsrfToken();
 
@@ -171,7 +212,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $result = registerStudent($_POST, $_FILES);
 
             if (is_array($result) && isset($result['success'])) {
-                $success = "Registration successful! Your student ID is: <strong>" . htmlspecialchars($result['student_id']) . "</strong> and your default password is: <strong>" . htmlspecialchars($result['password']) . "</strong><br><br>Please <a href='login.php'>Login</a> with your new account and change your password for security.";
+                $success = "Registration successful! Your student ID is: <strong>" .
+                    htmlspecialchars($result['student_id']) .
+                    "</strong> and your default password is: <strong>" .
+                    htmlspecialchars($result['password']) .
+                    "</strong><br><br>Please <a href='login.php'>Login</a> with your new account and change your password for security.";
                 error_log("Registration successful for student ID: " . $result['student_id']);
 
                 // Clear CSRF token after successful registration to prevent reuse
@@ -192,40 +237,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
     <title>Student Registration - School Management</title>
     <link rel="stylesheet" href="includes/style.css">
-    <style>
-        .success {
-            color: green;
-        }
-
-        .error {
-            color: red;
-        }
-
-        .form-group {
-            margin-bottom: 15px;
-        }
-
-        .container {
-            max-width: 550px;
-        }
-
-        .required:after {
-            content: " *";
-            color: red;
-        }
-
-        .image-preview {
-            width: 150px;
-            height: 150px;
-            border-radius: 50%;
-            margin: 10px auto;
-            border: 2px solid #ddd;
-            background-color: #f8f9fa;
-            background-size: cover;
-            background-position: center;
-            display: none;
-        }
-    </style>
 </head>
 
 <body>
@@ -238,37 +249,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <?php endif; ?>
 
         <form method="POST" enctype="multipart/form-data">
-            <input type="hidden" name="csrf_token" value="<?php echo $csrf_token; ?>">
+            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token); ?>">
 
             <div class="form-group">
-                <label class="required">Username</label>
+                <label>Username *</label>
                 <input type="text" name="username" value="<?php echo isset($_POST['username']) ? htmlspecialchars($_POST['username']) : ''; ?>" required>
             </div>
 
             <div class="form-group">
-                <label class="required">Email</label>
+                <label>Email *</label>
                 <input type="email" name="email" value="<?php echo isset($_POST['email']) ? htmlspecialchars($_POST['email']) : ''; ?>" required>
             </div>
 
             <div class="form-group">
-                <label class="required">Full Name</label>
+                <label>Full Name *</label>
                 <input type="text" name="full_name" value="<?php echo isset($_POST['full_name']) ? htmlspecialchars($_POST['full_name']) : ''; ?>" required>
             </div>
 
             <div class="form-group">
-                <p><strong>Note:</strong> Student ID will be automatically generated.<br>
-                    Default password will be set to "default123".</p>
-            </div>
-
-            <div class="form-group">
                 <label>Profile Image</label>
-                <input type="file" name="profile_image" id="profileImageInput" accept="image/jpeg,image/png,image/gif">
-                <small class="text-muted">Max size: 5MB. Accepted formats: JPG, PNG, GIF</small>
-                <div id="imagePreview" class="image-preview"></div>
+                <input type="file" name="profile_image" accept="image/jpeg,image/png,image/gif">
+                <small>Max size: 5MB. Accepted formats: JPG, PNG, GIF</small>
             </div>
 
             <div class="form-group">
-                <label class="required">Course</label>
+                <label>Course *</label>
                 <select name="course_id" required>
                     <option value="">Select Course</option>
                     <?php
@@ -294,48 +299,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </div>
 
             <button type="submit">Register</button>
-
             <p><a href="login.php">Back to Login</a></p>
         </form>
     </div>
-
-    <script>
-        // Image preview functionality
-        document.getElementById('profileImageInput').addEventListener('change', function() {
-            const preview = document.getElementById('imagePreview');
-
-            if (this.files && this.files[0]) {
-                const file = this.files[0];
-
-                // Check file size (max 5MB)
-                if (file.size > 5 * 1024 * 1024) {
-                    alert('File is too large. Maximum size is 5MB.');
-                    this.value = '';
-                    preview.style.display = 'none';
-                    return;
-                }
-
-                // Check file type
-                const validTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/jpg'];
-                if (!validTypes.includes(file.type)) {
-                    alert('Invalid file type. Only JPG, JPEG, PNG and GIF are allowed.');
-                    this.value = '';
-                    preview.style.display = 'none';
-                    return;
-                }
-
-                // Show preview
-                const reader = new FileReader();
-                reader.onload = function(e) {
-                    preview.style.backgroundImage = 'url(' + e.target.result + ')';
-                    preview.style.display = 'block';
-                };
-                reader.readAsDataURL(file);
-            } else {
-                preview.style.display = 'none';
-            }
-        });
-    </script>
 </body>
 
 </html>
