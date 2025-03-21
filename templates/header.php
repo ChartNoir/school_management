@@ -47,6 +47,7 @@ if ($user_id) {
             <div id="profileMenu" class="profile-menu">
                 <button onclick="openProfileImageUpload()">Change Profile Picture</button>
                 <button onclick="showPasswordPrompt()">Reset Password</button>
+
                 <?php if (isset($_SESSION['role']) && ($_SESSION['role'] === 'student' || $_SESSION['role'] === 'teacher')): ?>
                     <button onclick="window.location.href='my_details.php'">My Details</button>
                 <?php endif; ?>
@@ -54,5 +55,14 @@ if ($user_id) {
                     <button type="submit">Logout</button>
                 </form>
             </div>
+            <input type="file"
+                id="profileImageInput"
+                name="profile_image"
+                accept="image/jpeg,image/png,image/gif,image/jpg"
+                style="display:none;"
+                onchange="uploadProfileImage(this.files[0])">
         </div>
+
     </header>
+    <script src="../includes/script.js"></script>
+</body>

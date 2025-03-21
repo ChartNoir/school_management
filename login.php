@@ -96,12 +96,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
 }
 
 // Handle forgot password request
+// Handle forgot password request
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['forgot_password'])) {
     if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
         $forgot_error = "Invalid CSRF token";
     } else {
         $email = $_POST['email'] ?? '';
-        // Implement forgot password logic
+
+        try {
+            // Check if user exists and is active
+            $stmt = $pdo->prepare("SELECT id, username FROM users WHERE email = ? AND is_active = TRUE");
+            $stmt->execute([$email]);
+            $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$user) {
+                $forgot_error = "No active account found with this email";
+            } else {
+                $resetToken = bin2hex(random_bytes(16));
+                $updateStmt = $pdo->prepare("
+                    UPDATE users 
+                    SET password_reset_token = ?, 
+                        password_reset_expiry = NOW() + INTERVAL 180 SECOND 
+                    WHERE id = ?
+                ");
+                $updateStmt->execute([$resetToken, $user['id']]);
+
+                // Set success message
+                $forgot_message = "A password reset request has been generated. Please contact an administrator.";
+            }
+        } catch (Exception $e) {
+            $forgot_error = "An error occurred. Please try again later.";
+            error_log("Forgot password error: " . $e->getMessage());
+        }
     }
 }
 

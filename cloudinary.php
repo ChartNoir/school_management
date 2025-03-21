@@ -159,3 +159,54 @@ function extractCloudinaryPublicId($url)
 
     return null;
 }
+
+/**
+ * Delete an image from Cloudinary
+ * 
+ * @param string $publicId Public ID of the image to delete
+ * @return bool True if deletion was successful, false otherwise
+ */
+function deleteCloudinaryImage($publicId)
+{
+    if (empty($publicId)) {
+        error_log('Empty public ID provided for deletion');
+        return false;
+    }
+
+    try {
+        // Prepare authentication
+        $timestamp = time();
+        $signature = hash('sha256', "public_id={$publicId}&timestamp={$timestamp}" . CLOUDINARY_API_SECRET);
+
+        // Prepare cURL
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => "https://api.cloudinary.com/v1_1/" . CLOUDINARY_CLOUD_NAME . "/image/destroy",
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => [
+                'public_id' => $publicId,
+                'api_key' => CLOUDINARY_API_KEY,
+                'timestamp' => $timestamp,
+                'signature' => $signature
+            ]
+        ]);
+
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        // Successful deletion returns 200 OK
+        if ($httpCode === 200) {
+            error_log("Successfully deleted Cloudinary image: {$publicId}");
+            return true;
+        } else {
+            error_log("Failed to delete Cloudinary image: {$publicId}. HTTP Code: {$httpCode}");
+            error_log("Response: " . $response);
+            return false;
+        }
+    } catch (Exception $e) {
+        error_log("Exception in deleteCloudinaryImage: " . $e->getMessage());
+        return false;
+    }
+}

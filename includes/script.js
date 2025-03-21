@@ -1,125 +1,173 @@
-// Profile Image Upload Functions
-function openProfileImageUpload() {
-  // Reset form and preview
-  document.getElementById("profileImageForm").reset();
-  document.getElementById("imagePreview").style.display = "none";
-  document.getElementById("uploadStatus").style.display = "none";
-  document.getElementById("uploadStatus").innerHTML = "";
+// File Validation Function
+function validateProfileImage(file) {
+  // Validation constants
+  const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
+  const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/gif", "image/jpg"];
 
-  // Show modal
-  const modal = new bootstrap.Modal(
-    document.getElementById("profileImageModal")
-  );
-  modal.show();
+  // Check if file exists
+  if (!file) {
+    showUploadStatus("No file selected", "danger");
+    console.error("No file provided for validation");
+    return false;
+  }
 
-  // Close profile menu
-  toggleProfileMenu();
+  // Validate file size
+  if (file.size > MAX_FILE_SIZE) {
+    showUploadStatus("File is too large. Maximum size is 5MB", "danger");
+    console.error("File size exceeds maximum limit");
+    return false;
+  }
+
+  // Validate file type
+  if (!ALLOWED_TYPES.includes(file.type)) {
+    showUploadStatus(
+      "Invalid file type. Only JPG, JPEG, PNG and GIF are allowed",
+      "danger"
+    );
+    console.error("Invalid file type:", file.type);
+    return false;
+  }
+
+  return true;
 }
 
-// Image preview functionality
-document
-  .getElementById("profileImageInput")
-  ?.addEventListener("change", function () {
-    const preview = document.getElementById("imagePreview");
-    const previewImg = preview.querySelector("img");
+// Status Notification Function
+function showUploadStatus(message, type = "info") {
+  // Create a toast notification dynamically
+  const existingToast = document.querySelector(".upload-status-toast");
+  if (existingToast) {
+    existingToast.remove();
+  }
 
-    if (this.files && this.files[0]) {
-      const file = this.files[0];
+  const toast = document.createElement("div");
+  toast.className = `upload-status-toast alert alert-${type} position-fixed top-0 end-0 m-3`;
+  toast.style.zIndex = "1050";
+  toast.textContent = message;
 
-      // Check file size (max 5MB)
-      if (file.size > 5 * 1024 * 1024) {
-        alert("File is too large. Maximum size is 5MB.");
-        this.value = "";
-        preview.style.display = "none";
-        return;
-      }
+  document.body.appendChild(toast);
 
-      // Check file type
-      const validTypes = ["image/jpeg", "image/png", "image/gif", "image/jpg"];
-      if (!validTypes.includes(file.type)) {
-        alert("Invalid file type. Only JPG, JPEG, PNG and GIF are allowed.");
-        this.value = "";
-        preview.style.display = "none";
-        return;
-      }
-
-      // Show preview
-      const reader = new FileReader();
-      reader.onload = function (e) {
-        previewImg.src = e.target.result;
-        preview.style.display = "block";
-      };
-      reader.readAsDataURL(file);
-    } else {
-      preview.style.display = "none";
+  // Remove toast after 3 seconds
+  setTimeout(() => {
+    if (document.body.contains(toast)) {
+      document.body.removeChild(toast);
     }
-  });
+  }, 3000);
+}
 
-// Handle form submission
-document
-  .getElementById("profileImageForm")
-  ?.addEventListener("submit", function (e) {
-    e.preventDefault();
+// Profile Image Upload Function
+function uploadProfileImage(file) {
+  // Comprehensive error handling
+  try {
+    // Validate file before upload
+    if (!validateProfileImage(file)) {
+      return;
+    }
 
-    const formData = new FormData(this);
-    const uploadStatus = document.getElementById("uploadStatus");
+    // Create FormData for upload
+    const formData = new FormData();
+    formData.append("profile_image", file);
 
-    // Show loading message
-    uploadStatus.innerHTML =
-      '<div class="alert alert-info">Uploading image, please wait...</div>';
-    uploadStatus.style.display = "block";
+    // Retrieve CSRF token with fallback
+    const csrfToken =
+      window.csrfToken ||
+      document.querySelector('input[name="csrf_token"]')?.value;
 
+    if (csrfToken) {
+      formData.append("csrf_token", csrfToken);
+    } else {
+      console.warn("CSRF token not found");
+      showUploadStatus("Security token missing", "danger");
+      return;
+    }
+
+    // Show loading indicator
+    showUploadStatus("Uploading image, please wait...", "info");
+
+    // Perform upload
     fetch("upload_image.php", {
       method: "POST",
+      credentials: "same-origin",
       body: formData,
     })
-      .then((response) => response.json())
+      .then((response) => {
+        return response.json();
+      })
       .then((data) => {
         if (data.success) {
-          // Show success message
-          uploadStatus.innerHTML =
-            '<div class="alert alert-success">' + data.message + "</div>";
+          // Success handling
+          showUploadStatus(
+            data.message || "Image uploaded successfully",
+            "success"
+          );
 
-          // Update profile images on the page
-          if (data.imageUrl) {
-            // Update main profile image in header
-            const profileImage = document.querySelector(".profile-image");
-            if (profileImage) {
-              profileImage.style.backgroundImage =
-                'url("' + data.imageUrl + '")';
+          // Update profile images across the application
+          const profileImages = document.querySelectorAll(".profile-image");
+          profileImages.forEach((image) => {
+            if (image && data.imageUrl) {
+              image.style.backgroundImage = `url('${data.imageUrl}')`;
             }
-
-            // Update other profile images if they exist
-            const otherProfileImages = document.querySelectorAll(
-              ".user-profile-image"
-            );
-            otherProfileImages.forEach((img) => {
-              img.style.backgroundImage = 'url("' + data.imageUrl + '")';
-            });
-          }
-
-          // Close modal after 2 seconds
-          setTimeout(() => {
-            const modal = bootstrap.Modal.getInstance(
-              document.getElementById("profileImageModal")
-            );
-            modal.hide();
-          }, 2000);
+          });
         } else {
-          // Show error message
-          uploadStatus.innerHTML =
-            '<div class="alert alert-danger">' + data.message + "</div>";
+          // Error handling
+          console.error("Upload Error:", data.message);
+          showUploadStatus(data.message || "Upload failed", "danger");
         }
       })
       .catch((error) => {
-        console.error("Error:", error);
-        uploadStatus.innerHTML =
-          '<div class="alert alert-danger">Upload failed: ' +
-          error.message +
-          "</div>";
+        console.error("Network or parsing error:", error);
+        showUploadStatus(
+          "Upload failed. Please check your connection.",
+          "danger"
+        );
       });
-  });
+  } catch (error) {
+    console.error("Unexpected error in uploadProfileImage:", error);
+    showUploadStatus("An unexpected error occurred", "danger");
+  }
+}
 
+// Event Listener Setup
+document.addEventListener("DOMContentLoaded", () => {
+  const profileImageInput = document.getElementById("profileImageInput");
+  if (profileImageInput) {
+    profileImageInput.addEventListener("change", function (event) {
+      try {
+        const file = event.target.files[0];
+        if (file) {
+          uploadProfileImage(file);
+        } else {
+          console.warn("No file selected");
+          showUploadStatus("Please select a file", "warning");
+        }
+      } catch (error) {
+        console.error("Error in file input change handler:", error);
+        showUploadStatus(
+          "An error occurred while selecting the file",
+          "danger"
+        );
+      }
+    });
+  } else {
+    console.warn("Profile image input element not found");
+  }
+});
+
+// Profile Image Upload Trigger Function
+function openProfileImageUpload() {
+  // Close profile menu if toggle function exists
+  if (typeof toggleProfileMenu === "function") {
+    toggleProfileMenu();
+  }
+
+  // Trigger file input click
+  const profileImageInput = document.getElementById("profileImageInput");
+  if (profileImageInput) {
+    profileImageInput.click();
+  } else {
+    console.error("Profile image input element not found");
+    showUploadStatus("Profile image upload is currently unavailable", "danger");
+  }
+}
 // Export Records Function
 function exportRecords(format) {
   const table = document.getElementById("editTableSelector").value;
@@ -329,8 +377,6 @@ function showSection(section) {
     console.error(`Section with ID '${sectionId}' not found`);
   }
 }
-
-let personalData = null;
 
 function toggleProfileMenu() {
   const menu = document.getElementById("profileMenu");
