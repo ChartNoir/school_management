@@ -1,18 +1,11 @@
 <?php
 session_start();
-require_once 'functions.php';
+require_once 'config.php';
 
 // Check if user is logged in and is an admin
 if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin') {
     header('Content-Type: application/json');
     echo json_encode(['error' => 'Unauthorized access']);
-    exit;
-}
-
-// Verify CSRF token
-if (!verifyCsrfToken($_GET['csrf_token'] ?? '')) {
-    header('Content-Type: application/json');
-    echo json_encode(['error' => 'Invalid CSRF token']);
     exit;
 }
 
@@ -39,11 +32,11 @@ if (!isset($valid_tables[$table])) {
 }
 
 try {
-    // Apply any filters (similar to showTable function)
+    // Prepare base query
     $query = "SELECT * FROM " . $valid_tables[$table];
     $params = [];
 
-    // Apply is_active filter for users table if provided
+    // Apply is_active filter for users table
     if ($table === 'users' && isset($_GET['is_active']) && $_GET['is_active'] !== '') {
         $isActive = filter_var($_GET['is_active'], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
         if ($isActive !== null) {
@@ -52,6 +45,7 @@ try {
         }
     }
 
+    // Prepare and execute the query
     $stmt = $pdo->prepare($query);
     $stmt->execute($params);
     $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -63,28 +57,26 @@ try {
         exit;
     }
 
-    // Filter fields if specified
+    // Filter columns if specific fields are selected
     if (!empty($fields)) {
-        $filtered_data = [];
+        $filteredData = [];
         foreach ($data as $row) {
-            $filtered_row = [];
+            $filteredRow = [];
             foreach ($fields as $field) {
-                if (isset($row[$field])) {
-                    $filtered_row[$field] = $row[$field];
+                // Only add the field if it exists in the row
+                if (array_key_exists($field, $row)) {
+                    $filteredRow[$field] = $row[$field];
                 }
             }
-            $filtered_data[] = $filtered_row;
+            $filteredData[] = $filteredRow;
         }
-        $data = $filtered_data;
+        $data = $filteredData;
     }
 
-    // Remove sensitive fields
-    $sensitive_fields = ['password', 'password_reset_token', 'password_reset_expiry'];
-    foreach ($data as &$row) {
-        foreach ($sensitive_fields as $field) {
-            if (isset($row[$field])) {
-                unset($row[$field]);
-            }
+    // Remove sensitive fields for users
+    if ($table === 'users') {
+        foreach ($data as &$row) {
+            unset($row['password'], $row['password_reset_token'], $row['password_reset_expiry']);
         }
     }
 
@@ -112,7 +104,7 @@ try {
 
         fclose($output);
     } elseif ($format === 'excel') {
-        // Excel Export (actually CSV with Excel MIME type)
+        // Excel Export (using HTML table)
         header('Content-Type: application/vnd.ms-excel');
         header('Content-Disposition: attachment; filename="' . $filename . '.xls"');
 
@@ -142,7 +134,13 @@ try {
         echo json_encode(['error' => 'Invalid export format']);
     }
 } catch (PDOException $e) {
+    error_log("Export Error: " . $e->getMessage());
     header('Content-Type: application/json');
-    echo json_encode(['error' => 'Database error: ' . $e->getMessage()]);
+    echo json_encode(['error' => 'Database error occurred during export']);
+    exit;
+} catch (Exception $e) {
+    error_log("Unexpected Export Error: " . $e->getMessage());
+    header('Content-Type: application/json');
+    echo json_encode(['error' => 'An unexpected error occurred during export']);
     exit;
 }

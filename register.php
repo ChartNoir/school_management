@@ -17,7 +17,7 @@ function verifyCsrfToken($token)
     return isset($_SESSION['csrf_token']) && hash_equals($_SESSION['csrf_token'], $token);
 }
 
-// Function to generate student ID (based on existing implementation)
+// Function to generate unique student ID
 function generateStudentId()
 {
     global $pdo;
@@ -53,8 +53,7 @@ function generateStudentId()
         }
     }
 
-    // If we can't generate a unique ID after max attempts, 
-    // generate a random unique ID
+    // Fallback: generate a random unique ID if attempts fail
     do {
         $randomId = 'S' . str_pad(mt_rand(1, 99999), 5, '0', STR_PAD_LEFT);
         $checkStmt = $pdo->prepare("SELECT COUNT(*) FROM student_details WHERE student_id = ?");
@@ -64,13 +63,30 @@ function generateStudentId()
     return $randomId;
 }
 
+// Registration function
 function registerStudent($data, $files)
 {
     global $pdo;
 
     try {
-        // Start transaction
+        // Start database transaction
         $pdo->beginTransaction();
+
+        // Validate input
+        $errors = [];
+
+        // Check required fields
+        $requiredFields = ['username', 'email', 'full_name', 'course_id'];
+        foreach ($requiredFields as $field) {
+            if (empty(trim($data[$field]))) {
+                $errors[] = ucfirst($field) . " is required";
+            }
+        }
+
+        // Email validation
+        if (!filter_var($data['email'], FILTER_VALIDATE_EMAIL)) {
+            $errors[] = "Invalid email format";
+        }
 
         // Check for existing username or email
         $checkStmt = $pdo->prepare("
@@ -82,45 +98,75 @@ function registerStudent($data, $files)
         $checkResult = $checkStmt->fetch(PDO::FETCH_ASSOC);
 
         if ($checkResult['username_count'] > 0) {
-            throw new Exception("Username already exists");
+            $errors[] = "Username already exists";
         }
 
         if ($checkResult['email_count'] > 0) {
-            throw new Exception("Email already exists");
+            $errors[] = "Email already exists";
         }
 
-        // Prepare profile image
+        // Throw validation errors if any
+        if (!empty($errors)) {
+            throw new Exception(implode(", ", $errors));
+        }
+
+        // Profile image upload
         $profileImageUrl = null;
-        if (!empty($files['profile_image']['tmp_name'])) {
-            try {
-                $uploadResult = uploadToCloudinary($files['profile_image'], 'student_images');
-                if (is_array($uploadResult) && isset($uploadResult['url'])) {
-                    $profileImageUrl = $uploadResult['url'];
+        if (isset($files['profile_image']) && $files['profile_image']['error'] == UPLOAD_ERR_OK) {
+            // Log file details
+            error_log("Profile Image Details:");
+            error_log("Temp Name: " . $files['profile_image']['tmp_name']);
+            error_log("Original Name: " . $files['profile_image']['name']);
+            error_log("File Size: " . $files['profile_image']['size']);
+            error_log("File Type: " . $files['profile_image']['type']);
+
+            // Attempt Cloudinary upload
+            $profileImageUrl = uploadToCloudinary($files['profile_image']);
+
+            if ($profileImageUrl) {
+                error_log("Successfully uploaded image: " . $profileImageUrl);
+            } else {
+                error_log("Failed to upload image for user: " . $data['username']);
+            }
+        } else {
+            // Log why file upload failed
+            if (isset($files['profile_image'])) {
+                error_log("File upload error code: " . $files['profile_image']['error']);
+                switch ($files['profile_image']['error']) {
+                    case UPLOAD_ERR_INI_SIZE:
+                        error_log("File is larger than upload_max_filesize");
+                        break;
+                    case UPLOAD_ERR_FORM_SIZE:
+                        error_log("File is larger than MAX_FILE_SIZE");
+                        break;
+                    case UPLOAD_ERR_PARTIAL:
+                        error_log("File was only partially uploaded");
+                        break;
+                    case UPLOAD_ERR_NO_FILE:
+                        error_log("No file was uploaded");
+                        break;
                 }
-            } catch (Exception $uploadError) {
-                error_log("Profile image upload failed: " . $uploadError->getMessage());
+            } else {
+                error_log("No profile_image key in FILES array");
             }
         }
 
         // Generate default password
-        $defaultPassword = 'default123';
+        $defaultPassword = "default123";
         $hashedPassword = password_hash($defaultPassword, PASSWORD_BCRYPT);
 
         // Insert user
         $userStmt = $pdo->prepare("
             INSERT INTO users 
-            (username, email, password, role, profile_image, is_active) 
-            VALUES (?, ?, ?, 'student', ?, 1)
+            (username, email, password, role, profile_image) 
+            VALUES (?, ?, ?, 'student', ?)
         ");
-
-        $userInsertResult = $userStmt->execute([
+        $userStmt->execute([
             $data['username'],
             $data['email'],
             $hashedPassword,
             $profileImageUrl
         ]);
-
-        // Get the last inserted user ID
         $userId = $pdo->lastInsertId();
 
         // Generate student ID
@@ -137,8 +183,7 @@ function registerStudent($data, $files)
              phone_number, address, course_id) 
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ");
-
-        $studentInsertResult = $studentStmt->execute([
+        $studentStmt->execute([
             $userId,
             $data['full_name'],
             $studentId,
@@ -159,7 +204,7 @@ function registerStudent($data, $files)
             'profile_image' => $profileImageUrl
         ];
     } catch (Exception $e) {
-        // Always rollback on error
+        // Rollback transaction
         if ($pdo->inTransaction()) {
             $pdo->rollBack();
         }
@@ -182,39 +227,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error = "Invalid CSRF token";
         error_log("CSRF token validation failed");
     } else {
-        // Validate required fields
-        $requiredFields = ['username', 'email', 'full_name', 'course_id'];
-        $missingFields = [];
+        $result = registerStudent($_POST, $_FILES);
 
-        foreach ($requiredFields as $field) {
-            if (empty($_POST[$field])) {
-                $missingFields[] = $field;
-            }
-        }
+        if (is_array($result) && isset($result['success'])) {
+            $success = "Registration successful! Your student ID is: <strong>" .
+                htmlspecialchars($result['student_id']) .
+                "</strong> and your default password is: <strong>" .
+                htmlspecialchars($result['password']) .
+                "</strong><br><br>Please <a href='login.php'>Login</a> with your new account and change your password.";
+            error_log("Registration successful for student ID: " . $result['student_id']);
 
-        if (!empty($missingFields)) {
-            $error = "Please fill in all required fields: " . implode(', ', $missingFields);
-            error_log("Missing required fields: " . implode(', ', $missingFields));
+            // Clear form data
+            unset($_POST);
         } else {
-            error_log("Calling registerStudent function");
-            $result = registerStudent($_POST, $_FILES);
-
-            if (is_array($result) && isset($result['success'])) {
-                $success = "Registration successful! Your student ID is: <strong>" .
-                    htmlspecialchars($result['student_id']) .
-                    "</strong> and your default password is: <strong>" .
-                    htmlspecialchars($result['password']) .
-                    "</strong><br><br>Please <a href='login.php'>Login</a> with your new account and change your password for security.";
-                error_log("Registration successful for student ID: " . $result['student_id']);
-
-                // Clear CSRF token after successful registration to prevent reuse
-                unset($_SESSION['csrf_token']);
-                // Clear form data
-                unset($_POST);
-            } else {
-                $error = $result;
-                error_log("Registration failed: " . $result);
-            }
+            $error = $result;
+            error_log("Registration failed: " . $result);
         }
     }
 }
@@ -230,6 +257,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <body>
     <div class="container">
         <h1>Student Registration</h1>
+
         <?php if (isset($success)): ?>
             <p class="success"><?php echo $success; ?></p>
         <?php elseif (isset($error)): ?>
@@ -241,22 +269,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             <div class="form-group">
                 <label>Username *</label>
-                <input type="text" name="username" value="<?php echo isset($_POST['username']) ? htmlspecialchars($_POST['username']) : ''; ?>" required>
+                <input type="text" name="username"
+                    value="<?php echo isset($_POST['username']) ? htmlspecialchars($_POST['username']) : ''; ?>"
+                    required>
             </div>
 
             <div class="form-group">
                 <label>Email *</label>
-                <input type="email" name="email" value="<?php echo isset($_POST['email']) ? htmlspecialchars($_POST['email']) : ''; ?>" required>
+                <input type="email" name="email"
+                    value="<?php echo isset($_POST['email']) ? htmlspecialchars($_POST['email']) : ''; ?>"
+                    required>
             </div>
 
             <div class="form-group">
                 <label>Full Name *</label>
-                <input type="text" name="full_name" value="<?php echo isset($_POST['full_name']) ? htmlspecialchars($_POST['full_name']) : ''; ?>" required>
+                <input type="text" name="full_name"
+                    value="<?php echo isset($_POST['full_name']) ? htmlspecialchars($_POST['full_name']) : ''; ?>"
+                    required>
             </div>
 
+            <input type="hidden" name="MAX_FILE_SIZE" value="5242880">
             <div class="form-group">
                 <label>Profile Image</label>
-                <input type="file" name="profile_image" accept="image/jpeg,image/png,image/gif">
+                <input type="file" name="profile_image" id="profile_image"
+                    accept="image/jpeg,image/png,image/gif,image/jpg">
                 <small>Max size: 5MB. Accepted formats: JPG, PNG, GIF</small>
             </div>
 
@@ -278,12 +314,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             <div class="form-group">
                 <label>Phone Number</label>
-                <input type="tel" name="phone" value="<?php echo isset($_POST['phone']) ? htmlspecialchars($_POST['phone']) : ''; ?>">
+                <input type="tel" name="phone"
+                    value="<?php echo isset($_POST['phone']) ? htmlspecialchars($_POST['phone']) : ''; ?>">
             </div>
 
             <div class="form-group">
                 <label>Address</label>
-                <textarea name="address"><?php echo isset($_POST['address']) ? htmlspecialchars($_POST['address']) : ''; ?></textarea>
+                <textarea name="address"><?php
+                                            echo isset($_POST['address']) ? htmlspecialchars($_POST['address']) : '';
+                                            ?></textarea>
             </div>
 
             <button type="submit">Register</button>
